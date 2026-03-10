@@ -47,13 +47,6 @@ function trySplitTask(task, onlineMachines) {
     (a, b) => (b.cpu * b.ram) - (a.cpu * a.ram) || b.cpu - a.cpu
   );
 
-  /*
-   * CPU:RAM ratio of the original task.
-   * Each chunk tries to maintain this ratio so work is split evenly.
-   * ratio = GB per core.  May be 0 if task.cpu === 0 (guard below).
-   */
-  const ratio = task.cpu > 0 ? task.ram / task.cpu : 0;
-
   const chunks  = [];
   let remCpu    = task.cpu;
   let remRam    = task.ram;
@@ -61,33 +54,37 @@ function trySplitTask(task, onlineMachines) {
   for (const machine of sorted) {
     if (remCpu <= 0 && remRam <= 0) break;
 
-    /* How much CPU can this machine contribute? */
-    let takeCpu = Math.min(machine.cpu, remCpu);
+    let takeCpu, takeRam;
 
-    /* Ideal RAM for this CPU slice (maintain ratio) */
-    let takeRam = ratio > 0 ? Math.ceil(takeCpu * ratio) : remRam;
+    if (remCpu <= 0) {
+      /* CPU already satisfied — mop up remaining RAM */
+      takeCpu = 0;
+      takeRam = Math.min(machine.ram, remRam);
+    } else if (remRam <= 0) {
+      /* RAM already satisfied — mop up remaining CPU */
+      takeCpu = Math.min(machine.cpu, remCpu);
+      takeRam = 0;
+    } else {
+      /*
+       * Both dimensions still needed.
+       * Use the CURRENT remaining ratio so rounding errors don't
+       * accumulate across iterations.
+       *   cpuFraction = fraction of remaining CPU this machine takes
+       *   takeRam     = proportional share of remaining RAM
+       */
+      takeCpu = Math.min(machine.cpu, remCpu);
+      const cpuFraction = takeCpu / remCpu;
+      takeRam = Math.min(Math.ceil(cpuFraction * remRam), machine.ram, remRam);
 
-    /* If ideal RAM exceeds machine capacity, scale down proportionally */
-    if (takeRam > machine.ram) {
-      takeRam = machine.ram;
-      /* Recalculate CPU bound if RAM is the bottleneck */
-      if (ratio > 0) {
-        takeCpu = Math.min(takeCpu, Math.ceil(takeRam / ratio));
+      /* If RAM is the bottleneck, scale CPU down to match */
+      if (takeRam < Math.ceil(cpuFraction * remRam)) {
+        const ramFraction = takeRam / remRam;
+        takeCpu = Math.min(Math.ceil(ramFraction * remCpu), machine.cpu, remCpu);
       }
     }
 
-    /* Clamp to remaining demand */
-    takeCpu = Math.min(takeCpu, remCpu);
-    takeRam = Math.min(takeRam, remRam);
-
-    /* Skip machines that can't contribute anything meaningful */
-    if (takeCpu < 1 && takeRam < 1) continue;
-    takeCpu = Math.max(takeCpu, remCpu > 0 ? 1 : 0);
-    takeRam = Math.max(takeRam, remRam > 0 ? 1 : 0);
-
-    /* Safety: don't over-allocate */
-    takeCpu = Math.min(takeCpu, remCpu);
-    takeRam = Math.min(takeRam, remRam);
+    /* Nothing useful from this machine */
+    if (takeCpu <= 0 && takeRam <= 0) continue;
 
     chunks.push({
       id:                `${task.id}__chunk__${chunks.length}`,
@@ -103,8 +100,8 @@ function trySplitTask(task, onlineMachines) {
       preferredMachineId: machine.id,
     });
 
-    remCpu -= takeCpu;
-    remRam -= takeRam;
+    remCpu = Math.max(0, remCpu - takeCpu);
+    remRam = Math.max(0, remRam - takeRam);
   }
 
   /* If residual demand remains, the fleet can't cover it → unschedulable */
