@@ -1,10 +1,11 @@
 /**
- * Best Fit Decreasing (BFD) matching algorithm with task splitting.
+ * Best Fit Decreasing (BFD) matching algorithm with smart task splitting.
  *
  * When a task is too large to fit on any single machine, trySplitTask()
- * breaks it into the minimum number of equal chunks that each fit on at
- * least one online machine.  The chunks are then matched via BFD like any
- * other task.
+ * computes variable-size chunks proportional to each machine's capacity,
+ * assigning each chunk a `preferredMachineId` hint.  The BFD pass then
+ * honours the hint (giving it a large priority bonus) and falls back to
+ * normal BFD if the preferred machine is already full.
  *
  * Returns:
  *   sortedTasks   — expanded, sorted task list (chunks replace oversized originals)
@@ -16,9 +17,19 @@
 /* ─── helpers ────────────────────────────────────────────────────────────── */
 
 /**
- * If `task` does not fit any single online machine, compute the minimum
- * number of equal-sized chunks that each do fit, and return the chunk array.
- * Returns null when the task fits as-is (no split needed).
+ * Attempt to split an oversized task into variable-size chunks, each
+ * proportional to a specific machine's capacity.
+ *
+ * Algorithm:
+ *  1. Verify total fleet capacity can cover the task (quick feasibility).
+ *  2. Sort machines by descending capacity score (cpu × ram).
+ *  3. Walk machines in order; for each, compute the largest chunk that:
+ *       a) respects remaining task demand, and
+ *       b) fits within that machine's capacity while preserving
+ *          the task's original CPU:RAM ratio as closely as possible.
+ *  4. Assign a `preferredMachineId` to each chunk.
+ *  5. Return null if the task already fits one machine (no split needed),
+ *     or if total fleet capacity is genuinely insufficient.
  */
 function trySplitTask(task, onlineMachines) {
   if (onlineMachines.length === 0) return null;
@@ -26,33 +37,88 @@ function trySplitTask(task, onlineMachines) {
   /* Already fits somewhere → no split */
   if (onlineMachines.some(m => m.cpu >= task.cpu && m.ram >= task.ram)) return null;
 
-  const maxCpu = Math.max(...onlineMachines.map(m => m.cpu));
-  const maxRam = Math.max(...onlineMachines.map(m => m.ram));
+  /* Quick feasibility: total fleet must have enough of both dimensions */
+  const totalCpu = onlineMachines.reduce((s, m) => s + m.cpu, 0);
+  const totalRam = onlineMachines.reduce((s, m) => s + m.ram, 0);
+  if (totalCpu < task.cpu || totalRam < task.ram) return null;   /* truly unschedulable */
 
-  /* Minimum chunks so each chunk fits within the largest machine */
-  const nCpu = task.cpu > maxCpu ? Math.ceil(task.cpu / maxCpu) : 1;
-  const nRam = task.ram > maxRam ? Math.ceil(task.ram / maxRam) : 1;
-  const n    = Math.max(nCpu, nRam, 2);   /* always at least 2 chunks */
+  /* Sort machines largest-first so the biggest chunks go to the biggest machines */
+  const sorted = [...onlineMachines].sort(
+    (a, b) => (b.cpu * b.ram) - (a.cpu * a.ram) || b.cpu - a.cpu
+  );
 
-  /* Distribute resources as evenly as possible; last chunk gets remainder */
-  const baseCpu = Math.floor(task.cpu / n);
-  const baseRam = Math.floor(task.ram / n);
-  const remCpu  = task.cpu % n;
-  const remRam  = task.ram % n;
+  /*
+   * CPU:RAM ratio of the original task.
+   * Each chunk tries to maintain this ratio so work is split evenly.
+   * ratio = GB per core.  May be 0 if task.cpu === 0 (guard below).
+   */
+  const ratio = task.cpu > 0 ? task.ram / task.cpu : 0;
 
-  return Array.from({ length: n }, (_, i) => ({
-    id:             `${task.id}__chunk__${i}`,
-    name:           `${task.name} [${i + 1}/${n}]`,
-    cpu:            baseCpu + (i < remCpu ? 1 : 0),
-    ram:            baseRam + (i < remRam ? 1 : 0),
-    duration:       task.duration,   /* each chunk runs for the same duration */
-    priority:       task.priority,
-    /* split metadata */
-    parentTaskId:   task.id,
-    parentTaskName: task.name,
-    chunkIndex:     i + 1,
-    totalChunks:    n,
-  }));
+  const chunks  = [];
+  let remCpu    = task.cpu;
+  let remRam    = task.ram;
+
+  for (const machine of sorted) {
+    if (remCpu <= 0 && remRam <= 0) break;
+
+    /* How much CPU can this machine contribute? */
+    let takeCpu = Math.min(machine.cpu, remCpu);
+
+    /* Ideal RAM for this CPU slice (maintain ratio) */
+    let takeRam = ratio > 0 ? Math.ceil(takeCpu * ratio) : remRam;
+
+    /* If ideal RAM exceeds machine capacity, scale down proportionally */
+    if (takeRam > machine.ram) {
+      takeRam = machine.ram;
+      /* Recalculate CPU bound if RAM is the bottleneck */
+      if (ratio > 0) {
+        takeCpu = Math.min(takeCpu, Math.ceil(takeRam / ratio));
+      }
+    }
+
+    /* Clamp to remaining demand */
+    takeCpu = Math.min(takeCpu, remCpu);
+    takeRam = Math.min(takeRam, remRam);
+
+    /* Skip machines that can't contribute anything meaningful */
+    if (takeCpu < 1 && takeRam < 1) continue;
+    takeCpu = Math.max(takeCpu, remCpu > 0 ? 1 : 0);
+    takeRam = Math.max(takeRam, remRam > 0 ? 1 : 0);
+
+    /* Safety: don't over-allocate */
+    takeCpu = Math.min(takeCpu, remCpu);
+    takeRam = Math.min(takeRam, remRam);
+
+    chunks.push({
+      id:                `${task.id}__chunk__${chunks.length}`,
+      cpu:               takeCpu,
+      ram:               takeRam,
+      duration:          task.duration,
+      priority:          task.priority,
+      /* split metadata — name & totalChunks filled in after loop */
+      parentTaskId:      task.id,
+      parentTaskName:    task.name,
+      chunkIndex:        chunks.length + 1,   /* 1-based, updated below */
+      totalChunks:       0,                   /* placeholder */
+      preferredMachineId: machine.id,
+    });
+
+    remCpu -= takeCpu;
+    remRam -= takeRam;
+  }
+
+  /* If residual demand remains, the fleet can't cover it → unschedulable */
+  if (remCpu > 0 || remRam > 0) return null;
+
+  /* Finalise chunk metadata now that we know totalChunks */
+  const n = chunks.length;
+  chunks.forEach((c, i) => {
+    c.totalChunks = n;
+    c.chunkIndex  = i + 1;
+    c.name        = `${task.name} [${i + 1}/${n}]`;
+  });
+
+  return chunks;
 }
 
 /* ─── main export ────────────────────────────────────────────────────────── */
@@ -63,9 +129,9 @@ export function runBFD(tasks, machines) {
   /* 1. Sort original tasks by CPU desc, then RAM desc */
   const sortedOriginal = [...tasks].sort((a, b) => b.cpu - a.cpu || b.ram - a.ram);
 
-  /* 2. Expand oversized tasks into chunks */
-  const expandedTasks  = [];
-  const splitRegistry  = {};   /* originalTaskId → { totalChunks, parentTaskName } */
+  /* 2. Expand oversized tasks into proportional chunks */
+  const expandedTasks = [];
+  const splitRegistry = {};   /* originalTaskId → { totalChunks, parentTaskName } */
 
   for (const task of sortedOriginal) {
     const chunks = onlineMachines.length > 0 ? trySplitTask(task, onlineMachines) : null;
@@ -89,22 +155,32 @@ export function runBFD(tasks, machines) {
   const assignments = [];
   const trace       = [];
 
-  /* 4. BFD on expanded task list */
+  /* 4. BFD on expanded task list.
+        For chunks with a preferredMachineId, give that machine a large scoring
+        bonus so it wins whenever it still has capacity — without bypassing the
+        normal evaluation (the animation still shows all machines being checked). */
   expandedTasks.forEach(task => {
-    const machineEvals = [];
-    let bestMachine    = null;
-    let bestWaste      = Infinity;
+    const machineEvals  = [];
+    let bestMachine     = null;
+    let bestEffective   = Infinity;   /* lower = better */
+
+    const PREFER_BONUS = 1_000_000;   /* large enough to always win when machine fits */
 
     onlineMachines.forEach(m => {
-      const a     = avail[m.id];
-      const fits  = a.cpu >= task.cpu && a.ram >= task.ram;
+      const a    = avail[m.id];
+      const fits = a.cpu >= task.cpu && a.ram >= task.ram;
       const waste = fits ? (a.cpu - task.cpu) + (a.ram - task.ram) : null;
+
+      /* Preferred machine: subtract a huge bonus so it sorts to the front */
+      const effective = fits
+        ? waste - (task.preferredMachineId === m.id ? PREFER_BONUS : 0)
+        : null;
 
       machineEvals.push({ machineId: m.id, machineName: m.name, fits, waste });
 
-      if (fits && waste < bestWaste) {
-        bestWaste   = waste;
-        bestMachine = m;
+      if (fits && effective < bestEffective) {
+        bestEffective = effective;
+        bestMachine   = m;
       }
     });
 
@@ -113,48 +189,51 @@ export function runBFD(tasks, machines) {
       avail[bestMachine.id].ram -= task.ram;
 
       assignments.push({
-        taskId:            task.id,
-        taskName:          task.name,
-        priority:          task.priority,
-        machineId:         bestMachine.id,
-        machineName:       bestMachine.name,
-        cpuAllocated:      task.cpu,
-        ramAllocated:      task.ram,
-        estimatedDuration: task.duration,
-        status:            'Scheduled',
+        taskId:             task.id,
+        taskName:           task.name,
+        priority:           task.priority,
+        machineId:          bestMachine.id,
+        machineName:        bestMachine.name,
+        cpuAllocated:       task.cpu,
+        ramAllocated:       task.ram,
+        estimatedDuration:  task.duration,
+        status:             'Scheduled',
         /* split metadata (undefined for regular tasks) */
-        parentTaskId:      task.parentTaskId,
-        parentTaskName:    task.parentTaskName,
-        chunkIndex:        task.chunkIndex,
-        totalChunks:       task.totalChunks,
+        parentTaskId:       task.parentTaskId,
+        parentTaskName:     task.parentTaskName,
+        chunkIndex:         task.chunkIndex,
+        totalChunks:        task.totalChunks,
+        preferredMachineId: task.preferredMachineId,
       });
     } else {
       assignments.push({
-        taskId:            task.id,
-        taskName:          task.name,
-        priority:          task.priority,
-        machineId:         null,
-        machineName:       null,
-        cpuAllocated:      0,
-        ramAllocated:      0,
-        estimatedDuration: task.duration,
-        status:            'Unschedulable',
-        parentTaskId:      task.parentTaskId,
-        parentTaskName:    task.parentTaskName,
-        chunkIndex:        task.chunkIndex,
-        totalChunks:       task.totalChunks,
+        taskId:             task.id,
+        taskName:           task.name,
+        priority:           task.priority,
+        machineId:          null,
+        machineName:        null,
+        cpuAllocated:       0,
+        ramAllocated:       0,
+        estimatedDuration:  task.duration,
+        status:             'Unschedulable',
+        parentTaskId:       task.parentTaskId,
+        parentTaskName:     task.parentTaskName,
+        chunkIndex:         task.chunkIndex,
+        totalChunks:        task.totalChunks,
+        preferredMachineId: task.preferredMachineId,
       });
     }
 
     trace.push({
-      taskId:            task.id,
+      taskId:             task.id,
       machineEvals,
-      assignedMachineId: bestMachine?.id ?? null,
+      assignedMachineId:  bestMachine?.id ?? null,
       /* split metadata */
-      isChunk:           !!task.parentTaskId,
-      parentTaskId:      task.parentTaskId,
-      chunkIndex:        task.chunkIndex,
-      totalChunks:       task.totalChunks,
+      isChunk:            !!task.parentTaskId,
+      parentTaskId:       task.parentTaskId,
+      chunkIndex:         task.chunkIndex,
+      totalChunks:        task.totalChunks,
+      preferredMachineId: task.preferredMachineId,
     });
   });
 

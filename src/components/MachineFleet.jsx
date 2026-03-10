@@ -67,6 +67,8 @@ export default function MachineFleet({ onProceed }) {
   const onlineMachines = machines.filter(m => m.status !== 'Offline');
   const totalCores = onlineMachines.reduce((s, m) => s + m.cpu, 0);
   const totalRAM   = onlineMachines.reduce((s, m) => s + m.ram, 0);
+  const maxSingleCpu = onlineMachines.length > 0 ? Math.max(...onlineMachines.map(m => m.cpu)) : 0;
+  const maxSingleRam = onlineMachines.length > 0 ? Math.max(...onlineMachines.map(m => m.ram)) : 0;
 
   /* Tasks from Phase 1 localStorage */
   const tasks = useMemo(() => {
@@ -239,9 +241,17 @@ export default function MachineFleet({ onProceed }) {
                 <CapacityRow label="RAM" demand={taskRAM}   supply={totalRAM}   unit="GB" />
                 {(taskCores > totalCores || taskRAM > totalRAM) && (
                   <p className="text-[10px] text-amber-400 mt-1">
-                    Oversized tasks will be split across machines.
+                    Total demand exceeds fleet — some tasks may be unschedulable.
                   </p>
                 )}
+                {/* Split threshold notice */}
+                <div className="pt-1 mt-1 border-t border-slate-700">
+                  <p className="text-[10px] text-slate-500">
+                    Split threshold:{' '}
+                    <span className="font-mono text-slate-400">{maxSingleCpu}c / {maxSingleRam} GB</span>
+                    {' '}(largest node). Tasks above this are auto-split.
+                  </p>
+                </div>
               </div>
             )}
           </div>

@@ -8,17 +8,26 @@ const EMPTY_FORM = {
   duration: '',
 };
 
+/* Largest single machine in the default fleet — tasks above this need splitting */
+const SINGLE_MACHINE_MAX_CPU = 16;
+const SINGLE_MACHINE_MAX_RAM = 64;
+
 export default function TaskForm({ onAddTask, locked }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [errors, setErrors] = useState({});
+
+  const cpuVal = Number(form.cpu);
+  const ramVal = Number(form.ram);
+  const needsSplit = (cpuVal > SINGLE_MACHINE_MAX_CPU || ramVal > SINGLE_MACHINE_MAX_RAM)
+    && cpuVal >= 1 && ramVal >= 1;
 
   function validate() {
     const e = {};
     if (!form.name.trim()) e.name = 'Task name is required.';
     const cpu = Number(form.cpu);
-    if (!form.cpu || cpu < 1 || cpu > 16) e.cpu = 'Enter 1–16 cores.';
+    if (!form.cpu || cpu < 1 || cpu > 128) e.cpu = 'Enter 1–128 cores.';
     const ram = Number(form.ram);
-    if (!form.ram || ram < 1 || ram > 64) e.ram = 'Enter 1–64 GB.';
+    if (!form.ram || ram < 1 || ram > 512) e.ram = 'Enter 1–512 GB.';
     const dur = Number(form.duration);
     if (!form.duration || dur < 1 || dur > 60) e.duration = 'Enter 1–60 seconds.';
     return e;
@@ -81,8 +90,8 @@ export default function TaskForm({ onAddTask, locked }) {
           <label className={labelBase}>CPU Cores</label>
           <input
             type="number"
-            min={1} max={16}
-            placeholder="1–16"
+            min={1} max={128}
+            placeholder="1–128"
             className={inputBase}
             value={form.cpu}
             onChange={e => field('cpu', e.target.value)}
@@ -94,8 +103,8 @@ export default function TaskForm({ onAddTask, locked }) {
           <label className={labelBase}>RAM (GB)</label>
           <input
             type="number"
-            min={1} max={64}
-            placeholder="1–64"
+            min={1} max={512}
+            placeholder="1–512"
             className={inputBase}
             value={form.ram}
             onChange={e => field('ram', e.target.value)}
@@ -104,6 +113,18 @@ export default function TaskForm({ onAddTask, locked }) {
           {errors.ram && <p className={errorText}>{errors.ram}</p>}
         </div>
       </div>
+
+      {/* Splitting badge — shown when task exceeds single-machine max */}
+      {needsSplit && (
+        <div className="flex items-center gap-2 rounded-lg bg-orange-900/20 border border-orange-500/30 px-3 py-2">
+          <span className="text-orange-400 text-sm flex-shrink-0">⚡</span>
+          <p className="text-[11px] text-orange-300 leading-snug">
+            <span className="font-bold">Multi-machine split required.</span>{' '}
+            This task exceeds any single machine's capacity ({SINGLE_MACHINE_MAX_CPU}c / {SINGLE_MACHINE_MAX_RAM} GB)
+            and will be split across multiple nodes.
+          </p>
+        </div>
+      )}
 
       {/* Priority */}
       <div>

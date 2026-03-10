@@ -506,7 +506,7 @@ function SplitGroupCard({ group, anim, liveAssignments }) {
         </div>
         {isSplitAnimating && (
           <p className="text-[10px] text-orange-400 mt-1 ml-4">
-            Task exceeds single-machine capacity — distributing across {totalChunks} machines
+            Exceeds single-machine capacity — splitting proportionally across {totalChunks} nodes
           </p>
         )}
         {allDone && allScheduled && (
@@ -550,9 +550,14 @@ function SplitGroupCard({ group, anim, liveAssignments }) {
                   {chunk.name}
                 </span>
               </div>
-              <div className="flex gap-2 mt-1 ml-6">
+              <div className="flex gap-2 mt-1 ml-6 flex-wrap">
                 <span className="text-[10px] font-mono text-slate-500">{chunk.cpu}c</span>
                 <span className="text-[10px] font-mono text-slate-500">{chunk.ram} GB</span>
+                {chunk.preferredMachineId && !isDone && (
+                  <span className="text-[9px] font-mono text-orange-500/70 ml-1">
+                    → {chunk.preferredMachineId}
+                  </span>
+                )}
               </div>
               {isDone && (
                 <p className={`text-[10px] font-bold mt-1 ml-6 ${isScheduled ? 'text-green-400' : 'text-red-400'}`}>
