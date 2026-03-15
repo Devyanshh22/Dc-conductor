@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import TaskCard from './TaskCard';
+import { saveTasks } from '../utils/apiClient';
 
 const DEFAULT_MIN = 5;
 const ABSOLUTE_MIN = 1;
 const ABSOLUTE_MAX = 20;
 
-export default function TaskQueue({ tasks, onRemove, onProceed, locked }) {
+export default function TaskQueue({ tasks, onRemove, onProceed, locked, sessionId, showToast }) {
   const [minTasks, setMinTasks] = useState(DEFAULT_MIN);
 
   const remaining  = Math.max(0, minTasks - tasks.length);
@@ -109,7 +110,13 @@ export default function TaskQueue({ tasks, onRemove, onProceed, locked }) {
       {/* ── Proceed button ── */}
       <div className="pt-2 border-t border-slate-700">
         <button
-          onClick={onProceed}
+          onClick={async () => {
+            if (sessionId) {
+              await saveTasks(sessionId, tasks);
+              showToast?.('Tasks saved ✓');
+            }
+            onProceed();
+          }}
           disabled={!canProceed}
           className={`w-full rounded-xl font-semibold py-3 text-sm transition-all duration-200 shadow-lg ${
             canProceed

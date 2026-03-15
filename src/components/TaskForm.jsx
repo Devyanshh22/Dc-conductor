@@ -5,6 +5,7 @@ const EMPTY_FORM = {
   cpu: '',
   ram: '',
   priority: 'Medium',
+  operationType: 'Compute',
   duration: '',
 };
 
@@ -44,6 +45,7 @@ export default function TaskForm({ onAddTask, locked }) {
       cpu: Number(form.cpu),
       ram: Number(form.ram),
       priority: form.priority,
+      operationType: form.operationType,
       duration: Number(form.duration),
     });
     setForm(EMPTY_FORM);
@@ -137,6 +139,21 @@ export default function TaskForm({ onAddTask, locked }) {
         >
           {['Critical', 'High', 'Medium', 'Low'].map(p => (
             <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Operation Type */}
+      <div>
+        <label className={labelBase}>Operation Type</label>
+        <select
+          className={inputBase}
+          value={form.operationType}
+          onChange={e => field('operationType', e.target.value)}
+          disabled={locked}
+        >
+          {['Arithmetic', 'I/O', 'Memory', 'Compute', 'Render'].map(t => (
+            <option key={t} value={t}>{t}</option>
           ))}
         </select>
       </div>

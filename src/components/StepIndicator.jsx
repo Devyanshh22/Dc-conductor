@@ -1,11 +1,12 @@
 import { Fragment } from 'react';
 
 const STEPS = [
-  { id: 1, label: 'Task Queue' },
-  { id: 2, label: 'Machine Fleet' },
-  { id: 3, label: 'Matching' },
-  { id: 4, label: 'Execution' },
-  { id: 5, label: 'Output' },
+  { id: 1,   label: 'Task Queue' },
+  { id: 2,   label: 'Machine Fleet' },
+  { id: 2.5, label: 'Decompose', display: '⚙' },
+  { id: 3,   label: 'Matching' },
+  { id: 4,   label: 'Execution' },
+  { id: 5,   label: 'Output' },
 ];
 
 export default function StepIndicator({ currentStep }) {
@@ -46,7 +47,7 @@ export default function StepIndicator({ currentStep }) {
                   }
                 `}
               >
-                {done ? '✓' : step.id}
+                {done ? '✓' : (step.display ?? step.id)}
               </div>
 
               <span

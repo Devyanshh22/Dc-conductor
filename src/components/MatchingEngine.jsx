@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import ConnectorCanvas from './ConnectorCanvas';
 import { runBFD } from '../utils/bfdAlgorithm';
+import { saveAssignments } from '../utils/apiClient';
 
 /* ─── constants ─────────────────────────────────────────────────────────── */
 
@@ -26,7 +27,7 @@ const PRI_CHIP = {
 
 /* ─── main component ────────────────────────────────────────────────────── */
 
-export default function MatchingEngine({ onProceed }) {
+export default function MatchingEngine({ onProceed, sessionId, showToast }) {
   const [tasks]    = useState(() => JSON.parse(localStorage.getItem('schedulerTasks')    || '[]'));
   const [machines] = useState(() => JSON.parse(localStorage.getItem('schedulerMachines') || '[]'));
 
@@ -195,8 +196,12 @@ export default function MatchingEngine({ onProceed }) {
     if (!cancelRef.current) {
       setPhase('done');
       localStorage.setItem('schedulerAssignments', JSON.stringify(bfd.assignments));
+      if (sessionId) {
+        await saveAssignments(sessionId, bfd.assignments);
+        showToast?.('Assignments saved ✓');
+      }
     }
-  }, [sortedTasks, trace, bfd.assignments, delay]);
+  }, [sortedTasks, trace, bfd.assignments, delay, sessionId, showToast]);
 
   /* ── Connector visibility ── */
   const connectorToId    = anim.evaluatingMachineId ?? anim.acceptedMachineId;

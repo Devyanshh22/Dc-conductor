@@ -4,6 +4,7 @@ import { exportJSON, exportCSV } from '../utils/exportUtils';
 import ResultsTable       from './ResultsTable';
 import StatCards          from './StatCards';
 import MachineBreakdown   from './MachineBreakdown';
+import { saveResults, completeSession } from '../utils/apiClient';
 
 /**
  * OutputDashboard  (Step 5)
@@ -18,7 +19,7 @@ import MachineBreakdown   from './MachineBreakdown';
  *   onRestart {function}  Called after the user confirms "Start New Session".
  *                         The caller (App) resets all React state.
  */
-export default function OutputDashboard({ onRestart }) {
+export default function OutputDashboard({ onRestart, sessionId, showToast }) {
 
   // ── Load data once ─────────────────────────────────────────────────────────
   const results = useMemo(
@@ -34,11 +35,18 @@ export default function OutputDashboard({ onRestart }) {
   const [phase,     setPhase]     = useState('merging');
 
   useEffect(() => {
-    const t1 = setTimeout(() => setMergeStep(1), 900);   // cards done → compiler starts
-    const t2 = setTimeout(() => setMergeStep(2), 2900);  // compiler done
-    const t3 = setTimeout(() => setPhase('done'),  3100); // reveal output
+    const t1 = setTimeout(() => setMergeStep(1), 900);
+    const t2 = setTimeout(() => setMergeStep(2), 2900);
+    const t3 = setTimeout(async () => {
+      setPhase('done');
+      if (sessionId && results.length > 0) {
+        await saveResults(sessionId, results);
+        await completeSession(sessionId);
+        showToast?.('Session saved ✓');
+      }
+    }, 3100);
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-  }, []);
+  }, [sessionId, results, showToast]);
 
   // ── Restart with confirmation ──────────────────────────────────────────────
   const handleRestart = () => {

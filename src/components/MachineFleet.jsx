@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import MachineCard from './MachineCard';
 import { MACHINES } from '../data/machines';
+import { saveMachines } from '../utils/apiClient';
 
 const PRIORITY_DOT = {
   Critical: 'bg-red-500',
@@ -9,7 +10,7 @@ const PRIORITY_DOT = {
   Low:      'bg-green-500',
 };
 
-export default function MachineFleet({ onProceed }) {
+export default function MachineFleet({ onProceed, sessionId, showToast }) {
   /* Mutable machine list — user can toggle online/offline */
   const [machines, setMachines] = useState(() => MACHINES.map(m => ({ ...m })));
 
@@ -52,8 +53,12 @@ export default function MachineFleet({ onProceed }) {
     setScanIdx(-1);
   }
 
-  function handleProceed() {
+  async function handleProceed() {
     localStorage.setItem('schedulerMachines', JSON.stringify(machines));
+    if (sessionId) {
+      await saveMachines(sessionId, machines);
+      showToast?.('Machines saved ✓');
+    }
     onProceed();
   }
 
