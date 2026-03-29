@@ -2,10 +2,12 @@
  * Static machine fleet presets for Phase 2.
  * availCpu / availRam start equal to total for Idle nodes; 0 for Offline.
  * These will be mutated in later phases as tasks are assigned.
+ *
+ * id and name both use the "Node-X" format to match the backend worker registry.
  */
 export const MACHINES = [
   {
-    id: 'alpha',
+    id: 'Node-Alpha',
     name: 'Node-Alpha',
     type: 'High Performance',
     cpu: 16,
@@ -14,7 +16,7 @@ export const MACHINES = [
     uptime: '14h 22m',
   },
   {
-    id: 'beta',
+    id: 'Node-Beta',
     name: 'Node-Beta',
     type: 'General Purpose',
     cpu: 8,
@@ -23,7 +25,7 @@ export const MACHINES = [
     uptime: '9h 05m',
   },
   {
-    id: 'gamma',
+    id: 'Node-Gamma',
     name: 'Node-Gamma',
     type: 'General Purpose',
     cpu: 8,
@@ -32,7 +34,7 @@ export const MACHINES = [
     uptime: '3h 47m',
   },
   {
-    id: 'delta',
+    id: 'Node-Delta',
     name: 'Node-Delta',
     type: 'Low Power',
     cpu: 4,
@@ -41,12 +43,12 @@ export const MACHINES = [
     uptime: '21h 13m',
   },
   {
-    id: 'epsilon',
+    id: 'Node-Epsilon',
     name: 'Node-Epsilon',
     type: 'Minimal',
     cpu: 2,
     ram: 8,
-    status: 'Idle',
+    status: 'Offline',
     uptime: '0h 01m',
   },
 ];

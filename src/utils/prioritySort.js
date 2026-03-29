@@ -1,36 +1,11 @@
-const PRIORITY_ORDER = { Critical: 0, High: 1, Medium: 2, Low: 3 };
-
 /**
- * Sorts tasks by priority (Critical → High → Medium → Low),
- * with ties broken by CPU required (descending).
+ * sortTasks — sorts tasks by type (math first, then image), then by name.
  */
 export function sortTasks(tasks) {
+  const TYPE_ORDER = { math: 0, image: 1 };
   return [...tasks].sort((a, b) => {
-    const pDiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-    if (pDiff !== 0) return pDiff;
-    return b.cpu - a.cpu;
+    const tDiff = (TYPE_ORDER[a.type] ?? 99) - (TYPE_ORDER[b.type] ?? 99);
+    if (tDiff !== 0) return tDiff;
+    return a.name.localeCompare(b.name);
   });
 }
-
-export const PRIORITY_COLORS = {
-  Critical: {
-    badge: 'bg-red-500 text-white',
-    border: 'border-red-500/40',
-    glow: 'shadow-red-500/10',
-  },
-  High: {
-    badge: 'bg-orange-500 text-white',
-    border: 'border-orange-500/40',
-    glow: 'shadow-orange-500/10',
-  },
-  Medium: {
-    badge: 'bg-yellow-500 text-black',
-    border: 'border-yellow-500/40',
-    glow: 'shadow-yellow-500/10',
-  },
-  Low: {
-    badge: 'bg-green-500 text-white',
-    border: 'border-green-500/40',
-    glow: 'shadow-green-500/10',
-  },
-};

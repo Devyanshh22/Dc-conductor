@@ -1,0 +1,15 @@
+{
+  "name": "conductor-worker",
+  "version": "1.0.0",
+  "description": "HTTP worker service for Conductor distributed job scheduler",
+  "main": "worker.js",
+  "scripts": {
+    "start": "node worker.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.3",
+    "mathjs": "^13.0.0",
+    "sharp": "^0.33.4"
+  }
+}

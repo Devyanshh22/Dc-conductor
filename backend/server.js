@@ -1,9 +1,9 @@
 'use strict';
 
-const http       = require('http');
-const express    = require('express');
-const cors       = require('cors');
-const WebSocket  = require('ws');
+const http      = require('http');
+const express   = require('express');
+const cors      = require('cors');
+const WebSocket = require('ws');
 
 /* Initialise DB (runs schema migrations on first boot) */
 require('./db');
@@ -13,16 +13,18 @@ const tasksRouter       = require('./routes/tasks');
 const machinesRouter    = require('./routes/machines');
 const assignmentsRouter = require('./routes/assignments');
 const resultsRouter     = require('./routes/results');
-const executionRouter   = require('./routes/execution');
 
-const pool = require('./workerPool');
+/* execution module exports { router, setBroadcast } */
+const { router: executionRouter, setBroadcast } = require('./routes/execution');
+
+const registry = require('./workerPool');
 
 const app  = express();
 const PORT = 3001;
 
-/* ── Middleware ─────────────────────────────────────────────────────── */
-app.use(cors({ origin: 'http://localhost:5173' }));
-app.use(express.json());
+/* ── Middleware ─────────────────────────────────────────────────────────── */
+app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:5174'] }));
+app.use(express.json({ limit: '100mb' }));   /* images can be large */
 
 /* Request logger */
 app.use((req, _res, next) => {
@@ -30,7 +32,7 @@ app.use((req, _res, next) => {
   next();
 });
 
-/* ── Routes ─────────────────────────────────────────────────────────── */
+/* ── Routes ─────────────────────────────────────────────────────────────── */
 app.use('/api/sessions',  sessionsRouter);
 app.use('/api/sessions',  tasksRouter);
 app.use('/api/sessions',  machinesRouter);
@@ -38,21 +40,19 @@ app.use('/api/sessions',  assignmentsRouter);
 app.use('/api/sessions',  resultsRouter);
 app.use('/api/execution', executionRouter);
 
-/* ── 404 handler ────────────────────────────────────────────────────── */
-app.use((_req, res) => {
-  res.status(404).json({ error: 'Not found' });
-});
+/* ── 404 ────────────────────────────────────────────────────────────────── */
+app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 
-/* ── Error handler ──────────────────────────────────────────────────── */
+/* ── Error handler ──────────────────────────────────────────────────────── */
 app.use((err, _req, res, _next) => {
   console.error('[ERROR]', err);
   res.status(500).json({ error: err.message ?? 'Internal server error' });
 });
 
-/* ── HTTP server (wraps Express so WebSocket can share the same port) ── */
+/* ── HTTP server ────────────────────────────────────────────────────────── */
 const server = http.createServer(app);
 
-/* ── WebSocket server ───────────────────────────────────────────────── */
+/* ── WebSocket server ───────────────────────────────────────────────────── */
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
@@ -68,47 +68,21 @@ function broadcast(data) {
   }
 }
 
-/* ── Wire worker-pool events → WebSocket broadcast ─────────────────── */
+/* Wire broadcast function into the execution route module */
+setBroadcast(broadcast);
 
-pool.onProgress((msg) => {
-  broadcast({
-    type:      'task_progress',
-    taskId:    msg.taskId,
-    machineId: msg.machineId,
-    percent:   msg.percent,
-    metric:    msg.metric,
-    elapsed:   msg.elapsed,
-  });
-});
-
-pool.onComplete((msg) => {
-  broadcast({
-    type:           'task_complete',
-    taskId:         msg.taskId,
-    machineId:      msg.machineId,
-    actualDuration: msg.actualDuration,
-  });
-});
-
-pool.onAllDone((summary) => {
-  console.log(`[Pool] All tasks complete. Wall-clock: ${summary.totalDuration}s`);
-  broadcast({
-    type:          'execution_complete',
-    totalDuration: summary.totalDuration,
-    summary:       summary.summary,
-  });
-});
-
-/* ── Start ──────────────────────────────────────────────────────────── */
-pool.initPool()
+/* ── Start ──────────────────────────────────────────────────────────────── */
+registry.initRegistry()
   .then(() => {
-    console.log('[Pool] All 5 worker threads online');
     server.listen(PORT, () => {
       console.log(`Conductor backend running on http://localhost:${PORT}`);
       console.log(`WebSocket server listening on ws://localhost:${PORT}`);
     });
   })
   .catch((err) => {
-    console.error('[Pool] Failed to initialise worker pool:', err);
-    process.exit(1);
+    console.error('[Registry] initRegistry error:', err.message);
+    /* Start anyway — offline workers will be re-checked by the poll loop */
+    server.listen(PORT, () => {
+      console.log(`Conductor backend running on http://localhost:${PORT} (some workers may be offline)`);
+    });
   });

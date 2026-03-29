@@ -10,8 +10,9 @@ import { computeGlobalMetrics, formatMs } from '../utils/executionEngine';
  *   machineStates {object}  - keyed by machineId
  *   elapsedMs     {number}  - wall-clock ms since execution began
  *   phase         {string}  - 'running' | 'done'
+ *   wsStatus      {string}  - 'connecting' | 'connected' | 'disconnected' | null
  */
-export default function GlobalMetricsBar({ taskStates, machineStates, elapsedMs, phase }) {
+export default function GlobalMetricsBar({ taskStates, machineStates, elapsedMs, phase, wsStatus = null }) {
   const { total, completed, running, queued, overallProgress, etaMs } =
     computeGlobalMetrics(taskStates, machineStates);
 
@@ -103,6 +104,9 @@ export default function GlobalMetricsBar({ taskStates, machineStates, elapsedMs,
               <span className="text-green-400 text-xs font-semibold">All Complete</span>
             </div>
           )}
+
+          {/* ── WebSocket status indicator ── */}
+          {wsStatus !== null && <WsStatusChip status={wsStatus} />}
         </div>
 
       </div>
@@ -130,6 +134,21 @@ function TimeBlock({ label, value, color }) {
     <div className="text-center">
       <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-0.5">{label}</p>
       <p className={`text-sm font-mono font-bold ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function WsStatusChip({ status }) {
+  const cfg = {
+    connected:    { dot: 'bg-green-400',  text: 'text-green-400',  label: 'Live',           border: 'border-green-700/40',  bg: 'bg-green-900/20'  },
+    connecting:   { dot: 'bg-yellow-400 animate-pulse', text: 'text-yellow-300', label: 'Connecting…', border: 'border-yellow-700/40', bg: 'bg-yellow-900/10' },
+    disconnected: { dot: 'bg-red-400',    text: 'text-red-400',    label: 'Disconnected',   border: 'border-red-700/40',    bg: 'bg-red-900/20'    },
+  }[status] ?? { dot: 'bg-slate-500', text: 'text-slate-400', label: status, border: 'border-slate-700', bg: 'bg-slate-800/40' };
+
+  return (
+    <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-semibold ${cfg.bg} ${cfg.border}`}>
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
+      <span className={cfg.text}>{cfg.label}</span>
     </div>
   );
 }

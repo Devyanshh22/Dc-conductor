@@ -1,36 +1,109 @@
 import { useState, useEffect, useMemo } from 'react';
-import { computeStats }   from '../utils/computeStats';
+import { computeStats }     from '../utils/computeStats';
 import { exportJSON, exportCSV } from '../utils/exportUtils';
-import ResultsTable       from './ResultsTable';
-import StatCards          from './StatCards';
-import MachineBreakdown   from './MachineBreakdown';
+import StatCards            from './StatCards';
+import MachineBreakdown     from './MachineBreakdown';
+import MathOutputCard       from './MathOutputCard';
+import ImageOutputCard      from './ImageOutputCard';
 import { saveResults, completeSession } from '../utils/apiClient';
+import executionSocket      from '../utils/executionSocket';
 
 /**
  * OutputDashboard  (Step 5)
  *
  * Sequence:
- *   1. 'merging'  — task cards animate in from the left, then funnel into
- *                   a compiler box that pulses for ~2 s.
- *   2. 'done'     — full results panel: stat cards, sortable table,
- *                   per-machine breakdown, export buttons, restart.
+ *   1. 'merging'  — task cards animate in, compiler box pulses for ~2 s.
+ *   2. 'done'     — full results panel with per-task Math/Image output cards,
+ *                   stat cards, per-machine breakdown, export buttons.
  *
  * Props:
- *   onRestart {function}  Called after the user confirms "Start New Session".
- *                         The caller (App) resets all React state.
+ *   onRestart  {function}
+ *   sessionId  {string|null}
+ *   showToast  {function}
  */
 export default function OutputDashboard({ onRestart, sessionId, showToast }) {
 
-  // ── Load data once ─────────────────────────────────────────────────────────
+  /* ── Load data once ─────────────────────────────────────────────────────── */
   const results = useMemo(
     () => JSON.parse(localStorage.getItem('schedulerResults') || '[]'),
     [],
   );
 
+  /* schedulerTasks holds full task metadata (equation, imageData, etc.) */
+  const tasks = useMemo(
+    () => JSON.parse(localStorage.getItem('schedulerTasks') || '[]'),
+    [],
+  );
+
   const stats = useMemo(() => computeStats(results), [results]);
 
-  // ── Merge animation phase ──────────────────────────────────────────────────
-  // mergeStep: 0 = cards visible | 1 = compiler active | 2 = compiler done
+  /* Task lookup by id for output cards */
+  const taskById = useMemo(() => {
+    const m = {};
+    tasks.forEach(t => { m[t.id] = t; });
+    return m;
+  }, [tasks]);
+
+  /* ── Live math segments ─────────────────────────────────────────────────
+     { [taskId]: { segments: [{machineId, points}], received, total } }
+  ─────────────────────────────────────────────────────────────────────────── */
+  const [liveSegments, setLiveSegments] = useState({});
+
+  /* ── Live image strips ───────────────────────────────────────────────────
+     { [taskId]: { strips: [{stripIndex, machineId, machineName, grayscaleStrip, duration}],
+                   received, total, finalImage } }
+  ─────────────────────────────────────────────────────────────────────────── */
+  const [imageState, setImageState] = useState({});
+
+  useEffect(() => {
+    const unsubMath = executionSocket.onMathSegment(msg => {
+      const { taskId, machineId, results, totalSegments = 1 } = msg;
+      if (!taskId || !results) return;
+      setLiveSegments(prev => {
+        const entry = prev[taskId] ?? { segments: [], received: 0, total: totalSegments };
+        if (entry.segments.some(s => s.machineId === machineId)) return prev;
+        return {
+          ...prev,
+          [taskId]: {
+            segments: [...entry.segments, { machineId, points: results }],
+            received: entry.received + 1,
+            total:    totalSegments,
+          },
+        };
+      });
+    });
+
+    const unsubStrip = executionSocket.onImageStrip(msg => {
+      const { taskId, machineId, machineName, stripIndex, totalStrips, grayscaleStrip, duration } = msg;
+      if (!taskId) return;
+      setImageState(prev => {
+        const entry = prev[taskId] ?? { strips: [], received: 0, total: totalStrips ?? 1, finalImage: null };
+        if (entry.strips.some(s => s.stripIndex === stripIndex)) return prev;
+        return {
+          ...prev,
+          [taskId]: {
+            ...entry,
+            strips:   [...entry.strips, { stripIndex, machineId, machineName, grayscaleStrip, duration }],
+            received: entry.received + 1,
+            total:    totalStrips ?? entry.total,
+          },
+        };
+      });
+    });
+
+    const unsubComplete = executionSocket.onImageComplete(msg => {
+      const { taskId, finalImage } = msg;
+      if (!taskId || !finalImage) return;
+      setImageState(prev => ({
+        ...prev,
+        [taskId]: { ...(prev[taskId] ?? { strips: [], received: 0, total: 1 }), finalImage },
+      }));
+    });
+
+    return () => { unsubMath(); unsubStrip(); unsubComplete(); };
+  }, []);
+
+  /* ── Merge animation ────────────────────────────────────────────────────── */
   const [mergeStep, setMergeStep] = useState(0);
   const [phase,     setPhase]     = useState('merging');
 
@@ -48,10 +121,10 @@ export default function OutputDashboard({ onRestart, sessionId, showToast }) {
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   }, [sessionId, results, showToast]);
 
-  // ── Restart with confirmation ──────────────────────────────────────────────
+  /* ── Restart ────────────────────────────────────────────────────────────── */
   const handleRestart = () => {
     if (window.confirm(
-      'Start a new session?\n\nThis will clear all tasks, machines, assignments, and results.'
+      'Start a new session?\n\nThis will clear all tasks, machines, assignments, and results.',
     )) {
       ['schedulerTasks', 'schedulerMachines', 'schedulerAssignments', 'schedulerResults']
         .forEach(k => localStorage.removeItem(k));
@@ -59,19 +132,18 @@ export default function OutputDashboard({ onRestart, sessionId, showToast }) {
     }
   };
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // 1. Merge animation screen
-  // ══════════════════════════════════════════════════════════════════════════
+  /* ══════════════════════════════════════════════════════════════════════════
+     1. MERGE ANIMATION
+  ══════════════════════════════════════════════════════════════════════════ */
   if (phase === 'merging') {
     return (
       <div className="exec-fade-up flex flex-col items-center justify-center py-12 min-h-[480px] gap-0">
 
-        {/* Status label */}
         <p className="text-[10px] uppercase tracking-widest text-slate-600 mb-8">
           {mergeStep < 2 ? 'Aggregating results…' : 'Compilation complete!'}
         </p>
 
-        {/* ── Task cards (fade out when compiler appears) ── */}
+        {/* Task cards */}
         <div
           className={`
             flex flex-wrap justify-center gap-2 max-w-xl w-full mb-8
@@ -92,36 +164,29 @@ export default function OutputDashboard({ onRestart, sessionId, showToast }) {
           ))}
         </div>
 
-        {/* ── Compiler box (appears after cards, fades in) ── */}
+        {/* Compiler box */}
         <div
           className={`
-            flex flex-col items-center gap-3
-            transition-all duration-500
+            flex flex-col items-center gap-3 transition-all duration-500
             ${mergeStep >= 1 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6 pointer-events-none'}
           `}
         >
           <div
             className={`
-              w-22 h-22 w-[88px] h-[88px] rounded-2xl border-2 flex items-center justify-center
+              w-[88px] h-[88px] rounded-2xl border-2 flex items-center justify-center
               transition-colors duration-300
               ${mergeStep === 1
                 ? 'output-compiler-pulse border-indigo-500/70 bg-indigo-900/30'
-                : mergeStep >= 2
-                ? 'border-green-500/60 bg-green-900/20'
-                : 'border-slate-700 bg-slate-800/60'}
+                : 'border-green-500/60 bg-green-900/20'}
             `}
           >
-            <span
-              className={`text-3xl leading-none ${mergeStep === 1 ? 'output-spinner' : ''}`}
-            >
+            <span className={`text-3xl leading-none ${mergeStep === 1 ? 'output-spinner' : ''}`}>
               {mergeStep >= 2 ? '✅' : '⚙️'}
             </span>
           </div>
           <p className="text-sm text-slate-400 font-medium">
             {mergeStep < 2 ? 'Compiling results…' : 'Done — loading report…'}
           </p>
-
-          {/* Progress dots */}
           {mergeStep === 1 && (
             <div className="flex gap-1.5 mt-1">
               {[0, 1, 2].map(i => (
@@ -134,14 +199,13 @@ export default function OutputDashboard({ onRestart, sessionId, showToast }) {
             </div>
           )}
         </div>
-
       </div>
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // 2. Guard: no results
-  // ══════════════════════════════════════════════════════════════════════════
+  /* ══════════════════════════════════════════════════════════════════════════
+     2. NO RESULTS GUARD
+  ══════════════════════════════════════════════════════════════════════════ */
   if (!stats) {
     return (
       <div className="exec-fade-up flex flex-col items-center justify-center py-32 gap-4 text-center">
@@ -159,44 +223,35 @@ export default function OutputDashboard({ onRestart, sessionId, showToast }) {
     );
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // 3. Full Output Dashboard
-  // ══════════════════════════════════════════════════════════════════════════
+  /* ══════════════════════════════════════════════════════════════════════════
+     3. FULL OUTPUT DASHBOARD
+  ══════════════════════════════════════════════════════════════════════════ */
   return (
     <div className="exec-fade-up space-y-8 pb-10">
 
-      {/* ── Page header + export buttons ── */}
+      {/* ── Header + export buttons ── */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold text-slate-100 leading-tight">
             Output &amp; Results
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            {stats.totalTasks} tasks completed across {stats.uniqueMachineCount} machines
-            in {stats.totalWallClockS}s wall-clock time
+            {stats.totalTasks} task{stats.totalTasks !== 1 ? 's' : ''} completed across{' '}
+            {stats.uniqueMachineCount} machine{stats.uniqueMachineCount !== 1 ? 's' : ''} in{' '}
+            {stats.totalWallClockS}s wall-clock time
           </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => exportJSON(results)}
-            className="
-              flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold
-              bg-blue-700 hover:bg-blue-600 text-white
-              transition-colors duration-150 cursor-pointer
-              shadow-sm shadow-blue-900/40
-            "
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-blue-700 hover:bg-blue-600 text-white transition-colors cursor-pointer shadow-sm shadow-blue-900/40"
           >
             <span>⬇</span> Export JSON
           </button>
           <button
             onClick={() => exportCSV(stats.resultsWithRelTimes)}
-            className="
-              flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold
-              bg-green-700 hover:bg-green-600 text-white
-              transition-colors duration-150 cursor-pointer
-              shadow-sm shadow-green-900/40
-            "
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-green-700 hover:bg-green-600 text-white transition-colors cursor-pointer shadow-sm shadow-green-900/40"
           >
             <span>⬇</span> Export CSV
           </button>
@@ -209,14 +264,54 @@ export default function OutputDashboard({ onRestart, sessionId, showToast }) {
         <StatCards stats={stats} />
       </section>
 
-      {/* ── Sortable results table ── */}
+      {/* ── Per-task output cards ── */}
       <section>
         <SectionHeader
-          icon="📋"
-          title="Task Results"
-          badge={`${stats.totalTasks} rows · click headers to sort`}
+          icon="🔬"
+          title="Task Output"
+          badge={`${results.length} result${results.length !== 1 ? 's' : ''}`}
         />
-        <ResultsTable results={stats.resultsWithRelTimes} />
+        <div className="space-y-4">
+          {results.map(r => {
+            const task = taskById[r.taskId];
+            if (!task) return null;
+            if (task.type === 'math') {
+              const live = liveSegments[r.taskId];
+              /* Prefer live WS segments, else use segments stored in the result */
+              const segments = live?.segments.length > 0
+                ? live.segments
+                : (r.mathResults?.length > 0 ? [{ machineId: r.machineId, points: r.mathResults }] : undefined);
+              const segmentProgress = live
+                ? { received: live.received, total: live.total }
+                : (segments?.length > 0 ? { received: 1, total: 1 } : null);
+              return (
+                <MathOutputCard
+                  key={r.taskId}
+                  task={task}
+                  result={r}
+                  segments={segments}
+                  segmentProgress={segmentProgress}
+                />
+              );
+            }
+            const imgState = imageState[r.taskId];
+            const imageStrips      = imgState?.strips ?? [];
+            const imageFinalImage  = imgState?.finalImage ?? null;
+            const imageStripProgress = imgState
+              ? { received: imgState.received, total: imgState.total }
+              : (r.grayscaleData ? { received: 1, total: 1 } : null);
+            return (
+              <ImageOutputCard
+                key={r.taskId}
+                task={task}
+                result={r}
+                strips={imageStrips}
+                finalImage={imageFinalImage}
+                stripProgress={imageStripProgress}
+              />
+            );
+          })}
+        </div>
       </section>
 
       {/* ── Per-machine breakdown ── */}
@@ -248,15 +343,11 @@ export default function OutputDashboard({ onRestart, sessionId, showToast }) {
   );
 }
 
-// ── SectionHeader ─────────────────────────────────────────────────────────────
-
 function SectionHeader({ icon, title, badge }) {
   return (
-    <div className="flex items-center gap-2 mb-3">
+    <div className="flex items-center gap-2 mb-4">
       <span className="text-sm leading-none">{icon}</span>
-      <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
-        {title}
-      </h3>
+      <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">{title}</h3>
       {badge !== undefined && (
         <span className="text-[10px] bg-slate-800/60 text-slate-500 border border-slate-700/40 px-2 py-0.5 rounded-full font-mono">
           {badge}

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import TaskCard from './TaskCard';
 import { saveTasks } from '../utils/apiClient';
 
-const DEFAULT_MIN = 5;
+const DEFAULT_MIN = 1;
 const ABSOLUTE_MIN = 1;
 const ABSOLUTE_MAX = 20;
 

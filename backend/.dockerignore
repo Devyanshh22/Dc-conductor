@@ -1,0 +1,6 @@
+node_modules
+worker-service
+conductor.db
+conductor.db-shm
+conductor.db-wal
+worker.js

@@ -84,6 +84,20 @@ export async function saveResults(sessionId, results) {
   });
 }
 
+/* ── Execution ──────────────────────────────────────────────────────── */
+
+/**
+ * Dispatch a session's assignments to the worker-thread execution engine.
+ * Returns { status, totalTasks } or null.
+ */
+export async function startExecution(sessionId, assignments) {
+  const tasks = JSON.parse(localStorage.getItem('schedulerTasks') || '[]');
+  return apiFetch('/execution/start', {
+    method: 'POST',
+    body:   JSON.stringify({ sessionId, assignments, tasks }),
+  });
+}
+
 /* ── Read / history ─────────────────────────────────────────────────── */
 
 /** Get all sessions (summary list). Returns array or null. */

@@ -1,211 +1,211 @@
-/**
- * workerPool.js — Conductor Worker Thread Pool
- *
- * Manages 5 persistent Worker threads (one per virtual machine).
- * Each worker has its own task queue; tasks run sequentially per machine.
- * Progress and completion events are forwarded to registered callbacks
- * so server.js can broadcast them over WebSocket.
- */
 'use strict';
 
-const { Worker } = require('worker_threads');
-const path       = require('path');
-
-/* ── Machine definitions (match frontend presets in src/data/machines.js) ── */
-const MACHINE_DEFS = [
-  { id: 'alpha',   name: 'Node-Alpha'   },
-  { id: 'beta',    name: 'Node-Beta'    },
-  { id: 'gamma',   name: 'Node-Gamma'   },
-  { id: 'delta',   name: 'Node-Delta'   },
-  { id: 'epsilon', name: 'Node-Epsilon' },
-];
-
-const WORKER_PATH = path.join(__dirname, 'worker.js');
-
-/* ── Pool state ─────────────────────────────────────────────────────────── */
-
-/** @type {Map<string, {worker: Worker, status: string, queue: Array, currentTask: any, machineName: string}>} */
-const workers = new Map();
-
-const progressCallbacks = [];
-const completeCallbacks = [];
-const doneCallbacks     = [];
-
-/* Execution-run tracking */
-let executionTotal     = 0;
-let executionCompleted = 0;
-let executionStartTime = null;
-
-/** Per-machine stats for the summary event */
-const runStats = new Map();   // machineId -> { tasksCompleted, totalMs }
-
-/* ── Init ───────────────────────────────────────────────────────────────── */
-
 /**
- * Spawn all 5 worker threads.
- * Resolves when every worker has fired its 'online' event.
+ * workerPool.js — HTTP-based worker registry
+ *
+ * Instead of Node.js worker threads, each "machine" is an independent
+ * Docker container running worker-service/worker.js on a dedicated port.
+ * The coordinator communicates with workers over HTTP within the Docker network.
+ *
+ * Worker URLs are injected via environment variables (set in docker-compose.yml):
+ *   WORKER_ALPHA   http://worker-alpha:4001
+ *   WORKER_BETA    http://worker-beta:4002
+ *   WORKER_GAMMA   http://worker-gamma:4003
+ *   WORKER_DELTA   http://worker-delta:4004
+ *   WORKER_EPSILON http://worker-epsilon:4005
+ *
+ * Falls back to localhost ports when running outside Docker.
  */
-function initPool() {
-  return new Promise((resolve, reject) => {
-    let ready = 0;
 
-    for (const def of MACHINE_DEFS) {
-      const worker = new Worker(WORKER_PATH, {
-        workerData: { machineId: def.id },
-      });
+/* ── Worker URL map ─────────────────────────────────────────────────────── */
+const WORKER_URLS = {
+  'Node-Alpha':   process.env.WORKER_ALPHA   || 'http://localhost:4001',
+  'Node-Beta':    process.env.WORKER_BETA    || 'http://localhost:4002',
+  'Node-Gamma':   process.env.WORKER_GAMMA   || 'http://localhost:4003',
+  'Node-Delta':   process.env.WORKER_DELTA   || 'http://localhost:4004',
+  'Node-Epsilon': process.env.WORKER_EPSILON || 'http://localhost:4005',
+};
 
-      const state = {
-        worker,
-        machineId:   def.id,
-        machineName: def.name,
-        status:      'idle',
-        queue:       [],
-        currentTask: null,
-      };
-      workers.set(def.id, state);
+/* ── Registry ───────────────────────────────────────────────────────────── */
+/**
+ * Each entry:
+ * {
+ *   machineId: string,
+ *   url:       string,
+ *   cpuCores:  number,
+ *   ramGB:     number,
+ *   status:    'idle' | 'busy' | 'offline',
+ *   tasksCompleted: number,
+ * }
+ */
+const registry = new Map();
 
-      worker.on('online', () => {
-        ready++;
-        if (ready === MACHINE_DEFS.length) resolve();
-      });
+/* ── Ping helper ─────────────────────────────────────────────────────────── */
+const PING_TIMEOUT_MS = 3_000;
 
-      worker.on('message',  (msg) => _handleMessage(def.id, msg));
-      worker.on('error',    (err) => console.error(`[Pool:${def.id}] Worker error:`, err));
-      worker.on('exit',     (code) => {
-        if (code !== 0) console.error(`[Pool:${def.id}] Worker exited with code ${code}`);
-      });
-    }
-
-    /* Safety timeout: if workers don't come online in 10 s, reject */
-    setTimeout(() => reject(new Error('Worker pool init timeout')), 10_000);
-  });
-}
-
-/* ── Internal message handler ───────────────────────────────────────────── */
-
-function _handleMessage(machineId, msg) {
-  const state = workers.get(machineId);
-  if (!state) return;
-
-  switch (msg.type) {
-    case 'started': {
-      state.status = 'busy';
-      break;
-    }
-
-    case 'progress': {
-      for (const cb of progressCallbacks) cb(msg);
-      break;
-    }
-
-    case 'complete': {
-      state.status      = 'idle';
-      state.currentTask = null;
-      executionCompleted++;
-
-      /* Update per-machine stats */
-      const ms = runStats.get(machineId) ?? { tasksCompleted: 0, totalMs: 0 };
-      ms.tasksCompleted++;
-      ms.totalMs += (msg.actualDuration ?? 0) * 1000;
-      runStats.set(machineId, ms);
-
-      /* Fire per-task complete callbacks */
-      for (const cb of completeCallbacks) cb(msg);
-
-      /* Check if entire execution run is finished */
-      if (executionTotal > 0 && executionCompleted >= executionTotal) {
-        const totalDuration = parseFloat(((Date.now() - executionStartTime) / 1000).toFixed(2));
-        const summary = [];
-        for (const [mid, st] of runStats.entries()) {
-          summary.push({
-            machineId:      mid,
-            machineName:    workers.get(mid)?.machineName ?? mid,
-            tasksCompleted: st.tasksCompleted,
-            totalTime:      parseFloat((st.totalMs / 1000).toFixed(2)),
-          });
-        }
-        for (const cb of doneCallbacks) cb({ totalDuration, summary });
-        /* Reset for next run */
-        executionTotal     = 0;
-        executionCompleted = 0;
-        executionStartTime = null;
-        runStats.clear();
-      }
-
-      /* Dequeue next task for this worker if any */
-      if (state.queue.length > 0) {
-        const next = state.queue.shift();
-        _send(machineId, next);
-      }
-      break;
-    }
+async function pingWorker(machineId, url) {
+  try {
+    const ac  = new AbortController();
+    const tid = setTimeout(() => ac.abort(), PING_TIMEOUT_MS);
+    const res = await fetch(`${url}/status`, { signal: ac.signal });
+    clearTimeout(tid);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
   }
 }
 
-/* ── Internal send ──────────────────────────────────────────────────────── */
-
-function _send(machineId, task) {
-  const state = workers.get(machineId);
-  if (!state) return;
-  state.status      = 'busy';
-  state.currentTask = task;
-  state.worker.postMessage(task);
-}
-
-/* ── Public API ─────────────────────────────────────────────────────────── */
-
+/* ── initRegistry ────────────────────────────────────────────────────────── */
 /**
- * Dispatch a task to the correct worker.
- * If the worker is busy, the task is queued.
- * Returns false if machineId is unknown.
+ * Ping every worker on startup; mark each as idle or offline.
+ * Also starts the background polling loop (every 5 s).
  */
-function dispatchTask(task, machineId) {
-  const state = workers.get(machineId);
-  if (!state) return false;
-
-  if (state.status === 'idle') {
-    _send(machineId, task);
-  } else {
-    state.queue.push(task);
-  }
-  return true;
-}
-
-/**
- * Set the total task count for the current execution run and record start time.
- * Must be called before dispatching tasks so the "all done" event fires correctly.
- */
-function startExecution(total) {
-  executionTotal     = total;
-  executionCompleted = 0;
-  executionStartTime = Date.now();
-  runStats.clear();
-}
-
-/** Register a callback invoked for every progress update from any worker. */
-function onProgress(cb) { progressCallbacks.push(cb); }
-
-/** Register a callback invoked when any single task completes. */
-function onComplete(cb) { completeCallbacks.push(cb); }
-
-/** Register a callback invoked once when ALL tasks in a run are complete. */
-function onAllDone(cb) { doneCallbacks.push(cb); }
-
-/** Returns a snapshot of all workers' current state (safe to JSON-serialize). */
-function getPoolStatus() {
-  const result = [];
-  for (const [, state] of workers.entries()) {
-    result.push({
-      machineId:   state.machineId,
-      machineName: state.machineName,
-      status:      state.status,
-      queueLength: state.queue.length,
-      currentTask: state.currentTask
-        ? { taskId: state.currentTask.taskId, taskName: state.currentTask.taskName }
-        : null,
+async function initRegistry() {
+  for (const [machineId, url] of Object.entries(WORKER_URLS)) {
+    const data = await pingWorker(machineId, url);
+    registry.set(machineId, {
+      machineId,
+      url,
+      cpuCores:       data?.cpuCores ?? _defaultCores(machineId),
+      ramGB:          data?.ramGB    ?? _defaultRam(machineId),
+      status:         data ? 'idle' : 'offline',
+      tasksCompleted: data?.tasksCompleted ?? 0,
     });
+    console.log(`[Registry] ${machineId}: ${data ? 'online' : 'offline'} (${url})`);
   }
-  return result;
+
+  /* Background health poll — never mark a busy worker offline mid-task */
+  setInterval(async () => {
+    for (const [machineId, entry] of registry.entries()) {
+      if (entry.status === 'busy') continue;
+      const data = await pingWorker(machineId, entry.url);
+      if (data) {
+        entry.cpuCores       = data.cpuCores;
+        entry.ramGB          = data.ramGB;
+        entry.tasksCompleted = data.tasksCompleted;
+        if (entry.status === 'offline') {
+          entry.status = 'idle';
+          console.log(`[Registry] ${machineId} came back online`);
+        }
+      } else if (entry.status !== 'offline') {
+        entry.status = 'offline';
+        console.warn(`[Registry] ${machineId} went offline`);
+      }
+    }
+  }, 5_000);
 }
 
-module.exports = { initPool, dispatchTask, startExecution, onProgress, onComplete, onAllDone, getPoolStatus };
+/* ── dispatchMath ────────────────────────────────────────────────────────── */
+/**
+ * Send a math task to the worker at machineId.
+ * Task: { taskId, equation, xFrom, xEnd, xStep }
+ * Returns the worker's JSON response.
+ */
+async function dispatchMath(machineId, task) {
+  const entry = _requireEntry(machineId);
+  entry.status = 'busy';
+  const t0 = Date.now();
+  try {
+    const res = await _post(entry.url, '/task/math', task, 120_000);
+    entry.status = 'idle';
+    entry.tasksCompleted++;
+    console.log(`[Registry] ${machineId} math done in ${Date.now() - t0}ms`);
+    return res;
+  } catch (err) {
+    entry.status = 'idle';
+    throw err;
+  }
+}
+
+/* ── dispatchImage ───────────────────────────────────────────────────────── */
+/**
+ * Send an image strip to the worker at machineId.
+ * Task: { taskId, imageStrip: base64, stripIndex }
+ * Returns the worker's JSON response.
+ */
+async function dispatchImage(machineId, task) {
+  const entry = _requireEntry(machineId);
+  entry.status = 'busy';
+  const t0 = Date.now();
+  try {
+    const res = await _post(entry.url, '/task/image', task, 180_000);
+    entry.status = 'idle';
+    entry.tasksCompleted++;
+    console.log(`[Registry] ${machineId} image done in ${Date.now() - t0}ms`);
+    return res;
+  } catch (err) {
+    entry.status = 'idle';
+    throw err;
+  }
+}
+
+/* ── getRegistryStatus ───────────────────────────────────────────────────── */
+function getRegistryStatus() {
+  return Array.from(registry.values());
+}
+
+/* ── Internal helpers ────────────────────────────────────────────────────── */
+
+/**
+ * Normalize machineId to "Node-Alpha" format.
+ * Handles: "alpha" → "Node-Alpha", "node-alpha" → "Node-Alpha", "Node-Alpha" → "Node-Alpha"
+ */
+function normalizeMachineId(machineId) {
+  if (!machineId) return '';
+  const lower = machineId.toLowerCase();
+  const base = lower.startsWith('node-') ? lower.slice(5) : lower;
+  return 'Node-' + base.charAt(0).toUpperCase() + base.slice(1).toLowerCase();
+}
+
+/**
+ * Find a worker entry in the registry, tolerating id format mismatches.
+ */
+function findWorker(machineId) {
+  const normalized = normalizeMachineId(machineId);
+  if (registry.has(normalized)) return registry.get(normalized);
+  // Fallback: case-insensitive scan
+  for (const entry of registry.values()) {
+    if (entry.machineId.toLowerCase() === machineId.toLowerCase()) return entry;
+  }
+  return null;
+}
+
+function _requireEntry(machineId) {
+  const entry = findWorker(machineId);
+  if (!entry) throw new Error(`Unknown machine: ${machineId} (normalized: ${normalizeMachineId(machineId)})`);
+  if (entry.status === 'offline') throw new Error(`Worker ${entry.machineId} is offline`);
+  return entry;
+}
+
+async function _post(baseUrl, path, body, timeoutMs) {
+  const ac  = new AbortController();
+  const tid = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+      signal:  ac.signal,
+    });
+    clearTimeout(tid);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Worker ${path} returned ${res.status}: ${text}`);
+    }
+    return await res.json();
+  } catch (err) {
+    clearTimeout(tid);
+    throw err;
+  }
+}
+
+/** Sensible defaults when a worker is offline at startup */
+function _defaultCores(machineId) {
+  return { 'Node-Alpha': 16, 'Node-Beta': 8, 'Node-Gamma': 8, 'Node-Delta': 4, 'Node-Epsilon': 2 }[machineId] ?? 4;
+}
+function _defaultRam(machineId) {
+  return { 'Node-Alpha': 64, 'Node-Beta': 32, 'Node-Gamma': 16, 'Node-Delta': 16, 'Node-Epsilon': 8 }[machineId] ?? 8;
+}
+
+module.exports = { initRegistry, dispatchMath, dispatchImage, getRegistryStatus };

@@ -1,10 +1,12 @@
 /**
- * SQLite connection using Node.js built-in node:sqlite (Node 23+).
+ * SQLite connection using Node.js built-in node:sqlite (Node 22+).
  * No native addon compilation — no external dependencies.
  *
  * We monkey-patch a .transaction() helper onto the db object so every
  * route file can use the same `db.transaction(fn)(args)` pattern that
  * better-sqlite3 provides — no route changes needed.
+ *
+ * NOTE: If the schema changes, delete conductor.db and restart the server.
  */
 const { DatabaseSync } = require('node:sqlite');
 const path             = require('path');
@@ -17,7 +19,7 @@ const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 
-/* ── Schema initialisation ──────────────────────────────────────────── */
+/* ── Schema initialisation ──────────────────────────────────────────────── */
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,28 +30,36 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS tasks (
-    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id         INTEGER NOT NULL REFERENCES sessions(id),
-    task_id            TEXT    NOT NULL,
-    name               TEXT    NOT NULL,
-    cpu_required       INTEGER NOT NULL,
-    ram_required       INTEGER NOT NULL,
-    priority           TEXT    NOT NULL,
-    estimated_duration INTEGER NOT NULL,
-    operation_type     TEXT,
-    queue_position     INTEGER,
-    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    INTEGER,
+    task_id       TEXT,
+    name          TEXT,
+    type          TEXT,
+    equation      TEXT,
+    x_from        REAL,
+    x_to          REAL,
+    x_step        REAL,
+    total_points  INTEGER,
+    filename      TEXT,
+    width         INTEGER,
+    height        INTEGER,
+    file_size     INTEGER,
+    image_data    TEXT,
+    estimated_cpu REAL,
+    estimated_ram REAL,
+    queue_position INTEGER,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
   CREATE TABLE IF NOT EXISTS sub_tasks (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id         INTEGER NOT NULL REFERENCES sessions(id),
-    sub_task_id        TEXT    NOT NULL,
-    parent_task_id     TEXT    NOT NULL,
-    name               TEXT    NOT NULL,
-    cpu_required       REAL    NOT NULL,
-    ram_required       REAL    NOT NULL,
-    estimated_duration REAL    NOT NULL,
+    session_id         INTEGER,
+    sub_task_id        TEXT,
+    parent_task_id     TEXT,
+    name               TEXT,
+    cpu_required       REAL,
+    ram_required       REAL,
+    estimated_duration REAL,
     operation_type     TEXT,
     affinity_group     TEXT
   );
@@ -99,6 +109,8 @@ db.exec(`
     parent_task_id  TEXT
   );
 `);
+
+console.log('[DB] Schema initialized');
 
 /**
  * Transaction helper — mirrors the better-sqlite3 API:

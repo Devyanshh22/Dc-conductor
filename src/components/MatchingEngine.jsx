@@ -29,9 +29,12 @@ const PRI_CHIP = {
 
 export default function MatchingEngine({ onProceed, sessionId, showToast }) {
   const [tasks]    = useState(() => JSON.parse(localStorage.getItem('schedulerTasks')    || '[]'));
-  const [machines] = useState(() => JSON.parse(localStorage.getItem('schedulerMachines') || '[]'));
+  const [allMachines] = useState(() => JSON.parse(localStorage.getItem('schedulerMachines') || '[]'));
+  const [machines] = useState(() =>
+    allMachines.filter(m => (m.status || '').toLowerCase() !== 'offline')
+  );
 
-  /* Pre-compute BFD trace + split info once */
+  /* Pre-compute BFD trace + split info once (only online machines) */
   const bfd = useMemo(() => runBFD(tasks, machines), [tasks, machines]);
   const { sortedTasks, trace, splitRegistry } = bfd;
 

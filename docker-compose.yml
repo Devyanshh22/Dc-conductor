@@ -1,0 +1,87 @@
+
+services:
+
+  # ── Coordinator (Express + SQLite backend) ────────────────────────────────
+  coordinator:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    environment:
+      - WORKER_ALPHA=http://worker-alpha:4001
+      - WORKER_BETA=http://worker-beta:4002
+      - WORKER_GAMMA=http://worker-gamma:4003
+      - WORKER_DELTA=http://worker-delta:4004
+      - WORKER_EPSILON=http://worker-epsilon:4005
+    depends_on:
+      - worker-alpha
+      - worker-beta
+      - worker-gamma
+      - worker-delta
+      - worker-epsilon
+    networks:
+      - scheduler-net
+    restart: unless-stopped
+
+  # ── Worker: Node-Alpha (16 CPU / 64 GB) ──────────────────────────────────
+  worker-alpha:
+    build: ./backend/worker-service
+    environment:
+      - MACHINE_ID=Node-Alpha
+      - MACHINE_PORT=4001
+      - CPU_CORES=16
+      - RAM_GB=64
+    networks:
+      - scheduler-net
+    restart: unless-stopped
+
+  # ── Worker: Node-Beta (8 CPU / 32 GB) ────────────────────────────────────
+  worker-beta:
+    build: ./backend/worker-service
+    environment:
+      - MACHINE_ID=Node-Beta
+      - MACHINE_PORT=4002
+      - CPU_CORES=8
+      - RAM_GB=32
+    networks:
+      - scheduler-net
+    restart: unless-stopped
+
+  # ── Worker: Node-Gamma (8 CPU / 16 GB) ───────────────────────────────────
+  worker-gamma:
+    build: ./backend/worker-service
+    environment:
+      - MACHINE_ID=Node-Gamma
+      - MACHINE_PORT=4003
+      - CPU_CORES=8
+      - RAM_GB=16
+    networks:
+      - scheduler-net
+    restart: unless-stopped
+
+  # ── Worker: Node-Delta (4 CPU / 16 GB) ───────────────────────────────────
+  worker-delta:
+    build: ./backend/worker-service
+    environment:
+      - MACHINE_ID=Node-Delta
+      - MACHINE_PORT=4004
+      - CPU_CORES=4
+      - RAM_GB=16
+    networks:
+      - scheduler-net
+    restart: unless-stopped
+
+  # ── Worker: Node-Epsilon (2 CPU / 8 GB) ──────────────────────────────────
+  worker-epsilon:
+    build: ./backend/worker-service
+    environment:
+      - MACHINE_ID=Node-Epsilon
+      - MACHINE_PORT=4005
+      - CPU_CORES=2
+      - RAM_GB=8
+    networks:
+      - scheduler-net
+    restart: unless-stopped
+
+networks:
+  scheduler-net:
+    driver: bridge
